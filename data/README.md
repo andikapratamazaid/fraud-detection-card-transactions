@@ -1,17 +1,11 @@
 # Data
 
-CSV files are not included in this repo (large size and dataset license).
+The CSV is not included in this repo (large file and dataset terms).
 
-Download from Kaggle: https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce
+Download **Credit Card Fraud Detection** (ULB / Worldline, on Kaggle as `mlg-ulb/creditcardfraud`) and save it as:
 
-The same CSVs are also published in Olist's official GitHub repository
-(`olist/work-at-olist-data`, folder `datasets/`), which is how the documented
-run in this repo was reproduced without a Kaggle account.
+```
+data/creditcard.csv
+```
 
-Files used:
-- `olist_customers_dataset.csv`
-- `olist_orders_dataset.csv`
-- `olist_order_items_dataset.csv`
-- `olist_order_payments_dataset.csv`
-
-Place them in this folder, then run `sql/01_schema_and_load.sql`.
+About 285K transactions over two days; features `V1`-`V28` are anonymized PCA components, plus `Time`, `Amount` and `Class` (1 = fraud). Check the dataset page for the current license and citation requirements before reuse.
