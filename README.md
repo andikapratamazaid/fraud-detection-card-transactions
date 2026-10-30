@@ -1,87 +1,93 @@
-# E-Commerce Customer Analytics: RFM Segmentation & Cohort Retention (SQL)
+# Fraud Detection in Online Card Transactions
 
-> Customer segmentation (RFM) and monthly cohort retention analysis on ~100K real e-commerce orders, built with PostgreSQL.
+> Flagging fraudulent card transactions and choosing *how many alerts to raise* so that a fraud team saves more than it spends. Built with scikit-learn, with a time-based evaluation.
 
-**Tools:** PostgreSQL · (optional) Power BI / Looker Studio / Tableau for visualization
-**Dataset:** [Olist Brazilian E-Commerce Public Dataset](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) (~100K orders, 2016–2018, real anonymized data)
+**Dataset:** Credit Card Fraud Detection (ULB / Worldline): 284,807 European card transactions over two days, 0.173% fraud · **Tools:** Python, pandas, scikit-learn, matplotlib, seaborn
 
-## Business Questions
-1. Who are the most valuable customers, and how much revenue do they contribute?
-2. How well does the store retain customers after their first purchase?
-3. Which segments deserve priority for marketing actions?
+## Business Problem
+A payment provider loses money on every undetected fraud, but each alert also costs analyst time and may annoy a legitimate customer. A model that "is 99.8% accurate" is worthless here, since predicting "legit" for everything already scores that. The real question is: **which transactions should be reviewed, and how many, to maximize net savings?**
 
-## Repository Structure
-```
-sql/
-  01_schema_and_load.sql      -- DDL + CSV loading
-  02_data_quality_checks.sql  -- data validation + clean base view
-  03_rfm.sql                  -- RFM scoring + segmentation
-  04_cohort_retention.sql     -- monthly cohorts + retention pivot
-data/                         -- place CSV files here (not committed)
-output/                       -- query results from the documented run (CSV + psql logs)
-dashboard/                    -- charts built from the query results
-```
+## Approach
+1. **Data validation:** missing values, exact duplicate rows (dropped to avoid train/test contamination), class imbalance.
+2. **EDA:** amount distribution by class, fraud rate over time, features that separate fraud most.
+3. **Time-based split:** 60% train / 20% validation / 20% test in chronological order, so the model never learns from the future.
+4. **Three model families:** logistic regression (supervised baseline), Isolation Forest (unsupervised anomaly detection, no labels), and tuned gradient boosting using `TimeSeriesSplit` cross-validation.
+5. **Metric:** PR-AUC (average precision) instead of accuracy or ROC-AUC, plus a bootstrap interval because the test set has few frauds.
+6. **Business-driven threshold:** choose the alert rate that maximizes `fraud amount caught - review cost x alerts` on the validation set.
+7. **One-shot test evaluation:** precision, recall, money caught, confusion matrix, and an alert-budget table (precision/recall if analysts can review only 0.05% to 1% of transactions).
 
-## Key Analytical Decisions
-| Issue in the raw data | How it was handled |
+## Key Decisions
+| Issue | Decision |
 |---|---|
-| `customer_id` is unique per order, not per person | Used `customer_unique_id` as the true customer key |
-| One order can have multiple payment rows | Aggregated payments per order before joining to avoid double counting |
-| `canceled` / `unavailable` orders | Excluded |
-| Most customers purchase only once, so NTILE on Frequency is meaningless | Rule-based Frequency score (1x / 2x / 3x+) |
-| Earliest cohorts are tiny and the last months are incomplete | Excluded from conclusions |
-| Snapshot date | `MAX(order_date) + 1`, not today's date |
+| Extreme imbalance (0.173% fraud) | PR-AUC as the main metric; accuracy only shown to explain why it is misleading |
+| Shuffled splits would leak the future | Chronological train/validation/test split and `TimeSeriesSplit` for tuning |
+| Duplicate rows | Dropped before splitting (1,081 exact duplicates found) |
+| Few frauds in the test set | Bootstrap confidence interval on PR-AUC |
+| Probabilities are extremely skewed | Threshold searched over alert-rate quantiles, not a fixed 0.1-0.9 grid |
+| Complex vs. simple model | Gradient boosting kept only if it clearly beats logistic regression |
+| Labels are not always available | Isolation Forest included as an unsupervised reference |
+
+## Project Structure
+```
+notebooks/fraud_detection.ipynb   -- full analysis, from validation to model saving
+data/                             -- place creditcard.csv here (not committed)
+models/                           -- saved model + threshold (generated)
+images/                           -- charts for this README
+requirements.txt
+```
 
 ## How to Run
-1. Download the dataset from Kaggle (or the official Olist mirror on GitHub, see `data/README.md`) and create a PostgreSQL database.
-2. Run the files in `sql/` in order (01 → 04).
-3. Connect the `rfm_segments` and `cohort_retention` tables to your BI tool.
+```bash
+git clone https://github.com/andikapratamazaid/fraud-detection-card-transactions.git
+cd fraud-detection-card-transactions
+pip install -r requirements.txt
+# download the dataset into data/ (see data/README.md)
+jupyter notebook notebooks/fraud_detection.ipynb
+```
 
-## Results & Insights
-All numbers below are the actual output of running the queries in this repo on PostgreSQL 16 (logs and CSVs in `output/`). Clean base: **94,989 customers** and **R$15,739,137** revenue from valid orders (Sep 2016 – Oct 2018).
+## Results
+All numbers below are the actual output of the executed notebook in this repo. After dropping duplicates: train 170,235 transactions (342 frauds), validation 56,745 (57 frauds), test 56,746 (74 frauds).
 
-- **Repeat rate:** only **3.04% of customers purchased more than once**; 96.96% bought exactly once (query #6 in file 02). There are 99,441 `customer_id` values but only 96,096 real customers (`customer_unique_id`).
-- **Largest segment by customers:** Lost / Low Value — 24.1% of customers but only 10.6% of revenue (avg spend R$72.79, last purchase ~402 days before the snapshot).
-- **Largest segment by revenue:** Big Spenders (New) — 15.4% of customers producing **28.2% of revenue** (R$4,443,022, avg spend R$303.61). Together with Hibernating High-Value (14.8% of customers, 27.6% of revenue, avg recency 401 days), **two segments hold 55.8% of all revenue from 30.2% of customers**, and both are one-time buyers.
-- **True repeat buyers are rare:** Champions + Loyal Customers + At Risk together are just 3.1% of customers and 5.7% of revenue.
-- **Month-1 retention:** average **0.48%**, dropping to **0.26% by month 3** (average across 15 monthly cohorts, Jan 2017–Mar 2018, each with ≥500 customers and a fully observable window; tiny 2016 cohorts and the incomplete tail are excluded).
+| Model | Validation PR-AUC | Test PR-AUC |
+|---|---|---|
+| Logistic regression | 0.760 | 0.746 |
+| Isolation Forest (unsupervised) | 0.020 | 0.036 |
+| Gradient boosting (tuned) | 0.783 | 0.785 |
 
-![Revenue by RFM segment](dashboard/grafik_segmen_rfm.png)
+- **No-skill PR-AUC** (= fraud rate): 0.0010 on validation, 0.0013 on test. The tuned model scores roughly 600x that on the test set; gradient boosting is kept because it beats logistic regression on both validation (0.783 vs. 0.760) and test (0.785 vs. 0.746).
+- **Test PR-AUC 95% interval:** [0.693, 0.892] (bootstrap; the interval is wide because the test slice holds only 74 frauds).
+- **Chosen alert rate:** 0.089% of transactions (threshold 0.6338, picked on validation) → on the test set that is 65 alerts (0.115%), with **precision 0.846** and **recall 0.743**.
+- **Fraud amount caught:** **65.8%** of total fraud value (5,089 of 7,728), **net savings 4,764** on the test set at `REVIEW_COST` = 5 per review. On validation the same rule nets 7,501, while flagging everything would lose 271,494.
+- **Alert-budget view (test):** reviewing just the top 0.05% of scored transactions is 100% precise and already catches 37.8% of frauds; at a 0.10% budget, precision is 0.946 with recall 0.716. Precision collapses beyond that (0.216 at 0.50%), so a small, fixed review budget is the sweet spot.
+- **Isolation Forest is far weaker** (test PR-AUC 0.036) but needs no labels at all, so it remains a fallback reference for settings without fraud history.
 
-![Monthly cohort retention heatmap](dashboard/heatmap_retensi_kohort.png)
-
-- **Key finding:** most revenue comes from one-time buyers and retention is close to zero, so the business priority is converting the second purchase, not just acquisition. The single biggest recoverable pool is Hibernating High-Value: R$4.34 million of historical spend sitting idle for over a year.
-
-Full segment table:
-
-| Segment | Customers | % Customers | Revenue (R$) | % Revenue | Avg Recency (days) | Avg Monetary (R$) |
-|---|---|---|---|---|---|---|
-| Big Spenders (New) | 14,634 | 15.4 | 4,443,022 | 28.2 | 98 | 303.61 |
-| Hibernating High-Value | 14,023 | 14.8 | 4,341,365 | 27.6 | 401 | 309.59 |
-| Promising | 18,388 | 19.4 | 2,779,402 | 17.7 | 226 | 151.15 |
-| Lost / Low Value | 22,936 | 24.1 | 1,669,459 | 10.6 | 402 | 72.79 |
-| New Customers | 22,120 | 23.3 | 1,615,355 | 10.3 | 96 | 73.03 |
-| Champions | 1,012 | 1.1 | 376,966 | 2.4 | 95 | 372.50 |
-| At Risk / Cant Lose | 1,037 | 1.1 | 308,231 | 2.0 | 389 | 297.23 |
-| Loyal Customers | 839 | 0.9 | 205,337 | 1.3 | 188 | 244.74 |
+![Model evaluation](images/evaluation.png)
 
 ## Business Recommendations
-| Segment | Recommended Action |
+| Finding | Action |
 |---|---|
-| Champions / Loyal | Loyalty program, early access to new products; protect this small base, it is only 2.0% of customers |
-| Big Spenders (New) / New Customers | Second-purchase voucher soon after the first order; this is where 38.5% of revenue sits with no repeat yet |
-| Hibernating High-Value | Highest-priority win-back campaign (email/WhatsApp with a strong incentive); R$4.34M historical spend, idle ~401 days |
-| At Risk / Cant Lose | Win-back before they lapse fully; high past spend (avg R$297) but last purchase ~389 days ago |
-| Promising | Nurture with recommendations and free-shipping thresholds to lift the second and third order |
+| A tiny alert budget already captures most of the value: the top 0.10% of scores catch 71.6% of frauds at 94.6% precision | Start with a fixed daily review budget around the chosen alert rate (~0.1%) and tune from there |
+| Fraud amounts are usually small (median 9.82 vs. 22.00 for legitimate transactions) and low budgets stay precise | Consider auto-approving very small transactions to save review capacity for larger ones |
+| Fraud concentrates in the small hours, where the fraud rate reaches ~1.5% of transactions vs. near zero at midday | Weight staffing and review SLAs toward night hours instead of spreading them evenly |
+| Unsupervised scores are weaker but need no labels (test PR-AUC 0.036 vs. 0.785) | Use Isolation Forest only as a fallback for new merchants or markets with no fraud history |
 
-## Future Improvements
-- Simple CLV per segment
-- Delivery delay vs. retention analysis (join `order_reviews` and delivery dates)
-- Cohorts by product category or state
+## Limitations
+- Only two days of European card data from 2013, so no seasonality or long-term drift testing, and not representative of Indonesian payment behavior.
+- Few frauds in the test slice, so metrics are noisy.
+- Anonymized PCA features limit interpretability and prevent merchant, device or customer-history features.
+- In production, fraud labels arrive late (chargebacks), and fraudsters adapt over time.
+- Cost assumptions are simplifications: fixed review cost, flagged fraud assumed fully prevented, no customer-friction cost for false alarms.
+
+## Next Steps
+- Repeat on the IEEE-CIS Fraud Detection dataset with richer features (device, email domain, transaction history)
+- Velocity and behavioral features, SHAP explanations
+- Probability calibration and a drift-monitoring plan
+- Simple API or Streamlit demo that scores a transaction
 
 ## Related Projects
+- [E-Commerce RFM Segmentation & Cohort Retention (SQL)](https://github.com/andikapratamazaid/ecommerce-rfm-cohort-sql)
 - [Customer Churn Prediction for a Telecom Provider](https://github.com/andikapratamazaid/telco-churn-prediction)
-- [Fraud Detection in Online Card Transactions](https://github.com/andikapratamazaid/fraud-detection-card-transactions)
+- [Fraud Operations KPI Dashboard](https://github.com/andikapratamazaid/fraud-ops-kpi-dashboard) — monitoring dashboard built on this project's model
 
 ## Author
 **Andika Pratama Zaid** · [LinkedIn](https://linkedin.com/in/andikapratamazaid) · [GitHub](https://github.com/andikapratamazaid)
